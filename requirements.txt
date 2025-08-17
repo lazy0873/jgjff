@@ -1,2 +1,1 @@
 Flask==2.3.2
-chart.js==4.3.0  # opcional si usas directamente en HTML
