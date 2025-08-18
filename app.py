@@ -1,215 +1,314 @@
-from flask import Flask, render_template_string, request, redirect, url_for, session
-import os, random, time
+# app.py
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash
+from werkzeug.security import generate_password_hash, check_password_hash
+import os
+import datetime
+import random
+import json
 
 app = Flask(__name__)
-app.secret_key = "clave_secreta_nexusmed"
+app.secret_key = os.urandom(24)
 
-# Base de datos simulada
-users = {"demo":"1234"}
-medical_records = {"demo":[]}
+# ----------------------------
+# DATABASE SIMULATION
+# ----------------------------
+users_db = {}  # email -> {password_hash, profile_completed, records:[], tips_seen}
 
-# -------------------- Funciones --------------------
-def render_with_layout(body_content):
-    layout = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>NEXUSMED Premium</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <style>
-            body {{ font-family: Arial, sans-serif; padding: 20px; background-color:#f7f7f7; }}
-            .form-card {{ margin-bottom: 15px; }}
-            .card {{ background-color: #fff; padding: 15px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1); }}
-            canvas {{ max-width: 100%; height: auto; }}
-            .center-screen {{ display:flex; align-items:center; justify-content:center; height:100vh; flex-direction:column; }}
-            .loading-logo {{ font-size:48px; font-weight:bold; color:#0d6efd; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            {body_content}
-        </div>
-    </body>
-    </html>
-    """
-    return render_template_string(layout)
+# ----------------------------
+# TEMPLATES
+# ----------------------------
+landing_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUSMED</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f9f9f9; margin:0; padding:0; }
+header { background:#4a90e2; color:white; padding:40px; text-align:center; }
+h1 { margin:0; font-size:2.5em; }
+h3 { margin:10px 0 30px 0; font-weight:normal; }
+.container { max-width:800px; margin:auto; padding:20px; text-align:center; }
+.benefit { background:white; margin:10px; padding:20px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1); }
+button { padding:15px 30px; background:#4a90e2; color:white; border:none; border-radius:5px; cursor:pointer; font-size:1em; }
+button:hover { background:#357ab7; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NEXUSMED</h1>
+  <h3>Tu historial médico digital seguro y predictivo</h3>
+  <button onclick="window.location.href='/login'">Entrar</button>
+</header>
+<div class="container">
+  <div class="benefit"><strong>Historial único:</strong> Toda tu información médica en un solo lugar.</div>
+  <div class="benefit"><strong>Predicciones de salud:</strong> IA para prevenir enfermedades y crisis.</div>
+  <div class="benefit"><strong>Alertas personalizadas:</strong> Recordatorios y tips diarios.</div>
+  <div class="benefit"><strong>Gráficas visuales:</strong> Evolución de IMC, presión arterial, glucosa y más.</div>
+</div>
+</body>
+</html>
+"""
 
-def calculate_risks(record):
-    # Predicciones preventivas demo
-    risks = {
-        "Diabetes": min(100, int(record["glucosa"])*0.5 + int(record["peso"])*0.3 + random.randint(0,20)),
-        "Hipertension": min(100, int(record["presion"].split('/')[0])*0.5 + int(record["estres"])*5 + random.randint(0,15)),
-        "Cardiovascular": min(100, int(record["colesterol"])*0.4 + int(record["ejercicio"])*-3 + random.randint(0,20)),
-        "Cancer": random.randint(5,60)
-    }
-    return risks
+login_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login NEXUSMED</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f2f2f2; display:flex; justify-content:center; align-items:center; height:100vh; }
+form { background:white; padding:30px; border-radius:10px; box-shadow:0 0 15px rgba(0,0,0,0.2); width:100%; max-width:400px; }
+input { width:100%; padding:10px; margin:10px 0; border-radius:5px; border:1px solid #ccc; }
+button { padding:10px 20px; background:#4a90e2; color:white; border:none; border-radius:5px; cursor:pointer; width:100%; }
+button:hover { background:#357ab7; }
+.flash { color:red; text-align:center; }
+</style>
+</head>
+<body>
+<form method="POST">
+  <h2 style="text-align:center;">Login NEXUSMED</h2>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      {% for msg in messages %}
+        <div class="flash">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  <input type="email" name="email" placeholder="Correo electrónico" required>
+  <input type="password" name="password" placeholder="Contraseña" required>
+  <button type="submit">Entrar</button>
+  <p style="text-align:center;">¿No tienes cuenta? <a href="{{ url_for('register') }}">Registrarse</a></p>
+</form>
+</body>
+</html>
+"""
 
-def radar_factors(record):
-    return {
-        "Alimentación": int(record["alimentacion"]),
-        "Ejercicio": int(record["ejercicio"]),
-        "Estrés": int(record["estres"]),
-        "Sueño": int(record["sueno"])
-    }
+register_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Registro NEXUSMED</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f2f2f2; display:flex; justify-content:center; align-items:center; height:100vh; }
+form { background:white; padding:30px; border-radius:10px; box-shadow:0 0 15px rgba(0,0,0,0.2); width:100%; max-width:400px; }
+input { width:100%; padding:10px; margin:10px 0; border-radius:5px; border:1px solid #ccc; }
+button { padding:10px 20px; background:#4a90e2; color:white; border:none; border-radius:5px; cursor:pointer; width:100%; }
+button:hover { background:#357ab7; }
+.flash { color:red; text-align:center; }
+</style>
+</head>
+<body>
+<form method="POST">
+  <h2 style="text-align:center;">Registro NEXUSMED</h2>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      {% for msg in messages %}
+        <div class="flash">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  <input type="email" name="email" placeholder="Correo electrónico" required>
+  <input type="password" name="password" placeholder="Contraseña" required>
+  <input type="password" name="confirm" placeholder="Confirmar contraseña" required>
+  <button type="submit">Registrarse</button>
+  <p style="text-align:center;">¿Ya tienes cuenta? <a href="{{ url_for('login') }}">Entrar</a></p>
+</form>
+</body>
+</html>
+"""
 
-def population_comparison(value, factor):
-    promedio = {"glucosa":100,"colesterol":200,"presion":120,"peso":70}
-    if factor in promedio:
-        return f"{'mejor' if float(value)<promedio[factor] else 'peor'} que la media de tu edad"
-    return ""
-
-# -------------------- Rutas --------------------
-
-# --- Pantalla de carga ---
-@app.route('/loading')
-def loading():
-    body = """
-    <div class="center-screen">
-        <div class="loading-logo">NEXUSMED</div>
-        <div>Cargando aplicación...</div>
-        <script>
-            setTimeout(()=>{ window.location.href='/presentacion'; },2000);
-        </script>
+dashboard_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard NEXUSMED</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body { font-family: Arial, sans-serif; background:#f9f9f9; margin:0; padding:0; }
+header { background:#4a90e2; color:white; padding:20px; display:flex; justify-content:space-between; align-items:center; }
+h1 { margin:0; }
+.container { padding:20px; max-width:900px; margin:auto; }
+.card { background:white; padding:20px; margin:10px 0; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1); }
+button { padding:10px 20px; background:#4a90e2; color:white; border:none; border-radius:5px; cursor:pointer; }
+button:hover { background:#357ab7; }
+.tip { background:#dff0d8; padding:10px; margin:10px 0; border-radius:5px; }
+.progress-container { background:#e0e0e0; border-radius:20px; width:100%; margin:10px 0; }
+.progress-bar { background:#4a90e2; height:20px; border-radius:20px; width:0%; color:white; text-align:center; font-size:0.9em; line-height:20px; }
+.toggle { cursor:pointer; background:white; padding:5px 10px; border-radius:5px; margin-left:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NEXUSMED Dashboard</h1>
+  <div>
+    <span class="toggle" onclick="toggleTheme()">Modo Oscuro/Claro</span>
+    <form style="display:inline;" method="POST" action="{{ url_for('logout') }}">
+      <button type="submit">Logout</button>
+    </form>
+  </div>
+</header>
+<div class="container">
+  <div class="card">
+    <h3>Bienvenido {{ email }}</h3>
+    <p>Tu panel de predicciones y evolución médica</p>
+    <div class="progress-container">
+      <div class="progress-bar" style="width:{{ profile_progress }}%;">Perfil {{ profile_progress }}%</div>
     </div>
-    """
-    return render_with_layout(body)
+  </div>
 
-# --- Presentación ---
-@app.route('/presentacion')
-def presentacion():
-    body = """
-    <div class="card">
-        <h2>Bienvenido a NEXUSMED Premium</h2>
-        <p>NEXUSMED es tu asistente preventivo de salud. Aquí podrás registrar tu historial clínico, recibir predicciones de riesgo de enfermedades y monitorear tu salud con gráficos avanzados.</p>
-        <ul>
-            <li>Registra tu peso, altura, glucosa, colesterol y presión arterial.</li>
-            <li>Obtén predicciones de diabetes, hipertensión, riesgos cardiovasculares y cáncer.</li>
-            <li>Visualiza tus datos con gráficas dinámicas y comparaciones con población promedio.</li>
-            <li>Recibe alertas y recomendaciones personalizadas basadas en IA.</li>
-        </ul>
-        <a href="/login" class="btn btn-primary">Comenzar</a>
-    </div>
-    """
-    return render_with_layout(body)
+  {% for tip in tips %}
+  <div class="tip">💡 {{ tip }}</div>
+  {% endfor %}
 
-# --- Login ---
-@app.route('/', methods=['GET','POST'])
-@app.route('/login', methods=['GET','POST'])
+  <div class="card">
+    <h3>IMC Evolución</h3>
+    <canvas id="imcChart"></canvas>
+  </div>
+  <div class="card">
+    <h3>Presión Arterial</h3>
+    <canvas id="bpChart"></canvas>
+  </div>
+  <div class="card">
+    <h3>Glucosa</h3>
+    <canvas id="glucoseChart"></canvas>
+  </div>
+</div>
+
+<script>
+function toggleTheme(){
+    document.body.style.background = document.body.style.background=='#333'?'#f9f9f9':'#333';
+    document.body.style.color = document.body.style.color=='#fff'?'#000':'#fff';
+}
+const imcData = {
+  labels: {{ imc_labels | safe }},
+  datasets: [{
+    label: 'IMC',
+    data: {{ imc_values | safe }},
+    borderColor: 'rgba(75, 192, 192, 1)',
+    fill: false
+  }]
+};
+const bpData = {
+  labels: {{ bp_labels | safe }},
+  datasets: [{
+    label: 'Sistólica',
+    data: {{ bp_sys | safe }},
+    borderColor: 'rgba(255,99,132,1)',
+    fill:false
+  },{
+    label:'Diastólica',
+    data: {{ bp_dia | safe }},
+    borderColor: 'rgba(54,162,235,1)',
+    fill:false
+  }]
+};
+const glucoseData = {
+  labels: {{ glucose_labels | safe }},
+  datasets: [{
+    label:'Glucosa mg/dL',
+    data: {{ glucose_values | safe }},
+    borderColor:'rgba(255,206,86,1)',
+    fill:false
+  }]
+};
+new Chart(document.getElementById('imcChart'), { type:'line', data:imcData });
+new Chart(document.getElementById('bpChart'), { type:'line', data:bpData });
+new Chart(document.getElementById('glucoseChart'), { type:'line', data:glucoseData });
+</script>
+</body>
+</html>
+"""
+
+# ----------------------------
+# ROUTES
+# ----------------------------
+@app.route("/")
+def index():
+    return render_template_string(landing_template)
+
+@app.route("/login", methods=["GET","POST"])
 def login():
-    alerta = ""
     if request.method=="POST":
-        username = request.form["username"]
+        email = request.form["email"].lower()
         password = request.form["password"]
-        if username in users and users[username]==password:
-            session['user']=username
-            return redirect(url_for('dashboard'))
+        user = users_db.get(email)
+        if user and check_password_hash(user["password_hash"], password):
+            session["user"] = email
+            flash("Login exitoso")
+            return redirect(url_for("dashboard"))
         else:
-            alerta = "<div class='alert alert-danger'>Usuario o contraseña incorrectos</div>"
-    body = f"""
-    <h1>NEXUSMED Premium</h1>
-    <h3>Inicia sesión</h3>
-    {alerta}
-    <form method="POST">
-        <div class="form-card"><input type="text" name="username" placeholder="Usuario" required class="form-control"></div>
-        <div class="form-card"><input type="password" name="password" placeholder="Contraseña" required class="form-control"></div>
-        <button type="submit" class="btn btn-primary">Entrar</button>
-    </form>
-    """
-    return render_with_layout(body)
+            flash("Usuario o contraseña incorrecta")
+    return render_template_string(login_template)
 
-# --- Dashboard ---
-@app.route('/dashboard', methods=['GET','POST'])
-def dashboard():
-    if 'user' not in session:
-        return redirect(url_for('login'))
-    username = session['user']
-    alerta = ""
+@app.route("/register", methods=["GET","POST"])
+def register():
     if request.method=="POST":
-        record = {
-            "peso": request.form.get("peso"),
-            "altura": request.form.get("altura"),
-            "glucosa": request.form.get("glucosa"),
-            "colesterol": request.form.get("colesterol"),
-            "presion": request.form.get("presion"),
-            "alimentacion": request.form.get("alimentacion"),
-            "ejercicio": request.form.get("ejercicio"),
-            "estres": request.form.get("estres"),
-            "sueno": request.form.get("sueno"),
-            "sintomas": request.form.get("sintomas"),
-        }
-        medical_records.setdefault(username,[]).append(record)
-        alerta = "<div class='alert alert-success'>Registro guardado</div>"
+        email = request.form["email"].lower()
+        password = request.form["password"]
+        confirm = request.form["confirm"]
+        if password != confirm:
+            flash("Las contraseñas no coinciden")
+        elif email in users_db:
+            flash("Usuario ya registrado")
+        else:
+            users_db[email] = {
+                "password_hash": generate_password_hash(password),
+                "profile_completed": random.randint(40,80),
+                "records": [],
+                "tips_seen": []
+            }
+            flash("Registro exitoso, ya puedes entrar")
+            return redirect(url_for("login"))
+    return render_template_string(register_template)
 
-    record_cards=""
-    charts_script=""
-    for idx, rec in enumerate(medical_records.get(username, [])):
-        risks = calculate_risks(rec)
-        factors = radar_factors(rec)
-        record_cards += f"""
-        <div class='card mb-3'>
-            <strong>Registro {idx+1}</strong><br>
-            Peso: {rec['peso']} kg ({population_comparison(rec['peso'],'peso')}), Glucosa: {rec['glucosa']} mg/dL ({population_comparison(rec['glucosa'],'glucosa')}), Presión: {rec['presion']} ({population_comparison(rec['presion'].split('/')[0],'presion')}), Colesterol: {rec['colesterol']} mg/dL ({population_comparison(rec['colesterol'],'colesterol')})
-        </div>
-        <div class='row mb-3'>
-            <div class='col-md-6'><canvas id='lineChart{idx}'></canvas></div>
-            <div class='col-md-6'><canvas id='radarChart{idx}'></canvas></div>
-        </div>
-        """
-        charts_script += f"""
-        <script>
-        const ctxLine{idx} = document.getElementById('lineChart{idx}').getContext('2d');
-        new Chart(ctxLine{idx}, {{
-            type:'bar',
-            data:{{labels:['Diabetes','Hipertension','Cardiovascular','Cancer'],datasets:[{{label:'Riesgo (%)',data:[{risks['Diabetes']},{risks['Hipertension']},{risks['Cardiovascular']},{risks['Cancer']}],backgroundColor:['rgba(255,99,132,0.5)','rgba(54,162,235,0.5)','rgba(255,206,86,0.5)','rgba(75,192,192,0.5)'],borderColor:['red','blue','yellow','green'],borderWidth:1}}]}},
-            options:{{scales:{{y:{{beginAtZero:true,max:100}}}}}}
-        }});
-        const ctxRadar{idx} = document.getElementById('radarChart{idx}').getContext('2d');
-        new Chart(ctxRadar{idx},{{
-            type:'radar',
-            data:{{labels:['Alimentación','Ejercicio','Estrés','Sueño'],datasets:[{{label:'Factores de riesgo (1-10)',data:[{factors['Alimentación']},{factors['Ejercicio']},{factors['Estrés']},{factors['Sueño']}],backgroundColor:'rgba(255,99,132,0.2)',borderColor:'rgba(255,99,132,1)',borderWidth:2}}]}},
-            options:{{scales:{{r:{{beginAtZero:true,min:0,max:10}}}}}}
-        }});
-        </script>
-        """
+@app.route("/dashboard")
+def dashboard():
+    if "user" not in session:
+        flash("Debes iniciar sesión primero")
+        return redirect(url_for("login"))
+    email = session["user"]
+    user = users_db[email]
 
-    form_html = """
-    <form method="POST">
-        <div class='form-card'><label>Peso (kg):</label><input type="number" name="peso" step="0.1" class="form-control" required></div>
-        <div class='form-card'><label>Altura (cm):</label><input type="number" name="altura" step="0.1" class="form-control" required></div>
-        <div class='form-card'><label>Glucosa (mg/dL):</label><input type="number" name="glucosa" class="form-control" required></div>
-        <div class='form-card'><label>Colesterol (mg/dL):</label><input type="number" name="colesterol" class="form-control" required></div>
-        <div class='form-card'><label>Presión arterial (ej: 120/80):</label><input type="text" name="presion" class="form-control" required></div>
-        <div class='form-card'><label>Alimentación (1-10):</label><input type="number" name="alimentacion" min="1" max="10" class="form-control" required></div>
-        <div class='form-card'><label>Ejercicio (1-10):</label><input type="number" name="ejercicio" min="1" max="10" class="form-control" required></div>
-        <div class='form-card'><label>Estrés (1-10):</label><input type="number" name="estres" min="1" max="10" class="form-control" required></div>
-        <div class='form-card'><label>Sueño (1-10):</label><input type="number" name="sueno" min="1" max="10" class="form-control" required></div>
-        <div class='form-card'><label>Síntomas (coma separados):</label><input type="text" name="sintomas" class="form-control" required></div>
-        <button type="submit" class="btn btn-success">Guardar Registro</button>
-    </form>
-    """
+    # Simulación de datos
+    labels = [(datetime.date.today()-datetime.timedelta(days=6-i)).isoformat() for i in range(7)]
+    imc_values = [round(random.uniform(22,30),1) for _ in range(7)]
+    bp_sys = [random.randint(110,140) for _ in range(7)]
+    bp_dia = [random.randint(70,90) for _ in range(7)]
+    glucose_values = [random.randint(80,120) for _ in range(7)]
 
-    body_content=f"""
-    <h2>Bienvenido {username} a NEXUSMED Premium</h2>
-    {form_html}
-    {alerta}
-    <h3>Tus registros y predicciones avanzadas</h3>
-    {record_cards}
-    <form method="POST" action="{url_for('logout')}"><button type="submit" class="btn btn-danger mt-3">Cerrar sesión</button></form>
-    {charts_script}
-    """
+    # Tips diarios
+    all_tips = [
+        "Bebe al menos 2 litros de agua",
+        "Camina 30 minutos",
+        "Controla tu glucosa mañana",
+        "Incluye frutas y verduras en tu comida",
+        "Evita el exceso de azúcares"
+    ]
+    tips = random.sample(all_tips, 2)
 
-    return render_with_layout(body_content)
+    return render_template_string(dashboard_template, email=email,
+                                  profile_progress=user.get("profile_completed",50),
+                                  tips=tips,
+                                  imc_labels=labels, imc_values=imc_values,
+                                  bp_labels=labels, bp_sys=bp_sys, bp_dia=bp_dia,
+                                  glucose_labels=labels, glucose_values=glucose_values)
 
-# --- Logout ---
-@app.route('/logout', methods=['POST'])
+@app.route("/logout", methods=["POST"])
 def logout():
-    session.pop('user', None)
-    return redirect(url_for('login'))
+    session.pop("user", None)
+    flash("Sesión cerrada")
+    return redirect(url_for("login"))
 
-# -------------------- INICIO --------------------
+# ----------------------------
+# RUN SERVER
+# ----------------------------
 if __name__=="__main__":
-    port = int(os.environ.get("PORT",5000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
